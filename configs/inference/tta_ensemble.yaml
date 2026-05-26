@@ -1,0 +1,27 @@
+_target_: src.inference.predictor.EnsemblePredictor
+
+# TTA configuration
+tta:
+  enabled: true
+  n_views: 8
+  transforms:
+    - name: original
+    - name: hflip
+    - name: vflip
+    - name: hflip_vflip
+    - name: rotate_15
+    - name: rotate_neg15
+    - name: saturation_jitter
+    - name: contrast_jitter
+
+# Ensemble configuration
+ensemble:
+  n_models: 5
+  aggregation: mean_logits  # mean_logits | mean_probs | median_logits
+  calibrate_after_ensemble: true
+
+# Decision threshold — set after calibration, hardcoded for Docker
+threshold: 0.5  # overwritten by calibration script output
+
+# Batch size for inference
+batch_size: 32

@@ -1,0 +1,43 @@
+_target_: src.training.trainer.Rare26Trainer
+
+epochs: 50
+gradient_clip_val: 1.0
+accumulate_grad_batches: 2
+
+optimizer:
+  _target_: torch.optim.AdamW
+  backbone_lr: 1.0e-5
+  head_lr: 1.0e-3
+  weight_decay: 0.01
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: 50
+  eta_min: 1.0e-7
+
+loss:
+  _target_: src.losses.asymmetric_loss.AsymmetricLoss
+  gamma_neg: 4
+  gamma_pos: 1
+  clip: 0.05
+  # gamma_neg sweep for CV: [2, 4, 6]
+  gamma_neg_sweep: [2, 4, 6]
+
+early_stopping:
+  monitor: val_ppv_at_90recall
+  mode: max
+  patience: 10
+  min_delta: 0.001
+
+cross_validation:
+  enabled: true
+  n_splits: 5
+  stratified: true
+  seed: ${project.seed}
+
+logging:
+  log_every_n_steps: 10
+  save_top_k: 3
+  monitor: val_ppv_at_90recall
+
+mixed_precision: true

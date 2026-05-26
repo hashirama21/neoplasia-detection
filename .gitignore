@@ -1,0 +1,38 @@
+# Model weights
+weights/*.pt
+weights/*.pth
+weights/calibration/*.pkl
+
+# Hydra outputs
+outputs/
+multirun/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Docker
+*.tar.gz
+
+# Data
+data/*.csv
+data/images/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/*.ipynb
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

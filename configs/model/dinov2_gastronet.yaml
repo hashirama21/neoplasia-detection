@@ -1,0 +1,24 @@
+_target_: src.models.rare26_model.Rare26Model
+
+backbone:
+  name: vit_base_patch14_dinov2.lvd142m
+  pretrained: false
+  img_size: 336
+  num_classes: 0
+
+lora:
+  enabled: true
+  rank: 8
+  alpha: 16
+  dropout: 0.1
+  target_modules:
+    - qkv
+    - proj
+
+head:
+  embed_dim: 768
+  hidden_dim: 256
+  dropout: 0.3
+  num_classes: 1
+
+checkpoint_path: ${paths.weights_dir}/dinov2_gastronet5m.pth

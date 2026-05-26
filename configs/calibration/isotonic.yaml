@@ -1,0 +1,30 @@
+_target_: src.calibration.calibrator.PPVCalibrator
+
+method: isotonic  # isotonic | temperature | platt
+
+isotonic:
+  out_of_bounds: clip
+
+temperature:
+  init_temp: 1.5
+  lr: 0.01
+  max_iter: 1000
+
+# Bootstrap simulation — mirrors official evaluation exactly
+bootstrap:
+  n_iterations: 1000
+  prevalence: 0.01
+  target_recall: 0.90
+  seed: ${project.seed}
+
+# Threshold grid search
+threshold_grid:
+  start: 0.001
+  stop: 0.999
+  step: 0.001
+
+# Optimization target
+optimize: median_ppv  # median_ppv | mean_ppv
+
+# Strict: only use val_calibration split — never val_selection
+calibration_set: val_calibration
