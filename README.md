@@ -1,5 +1,7 @@
 # RARE26 — Barrett Neoplasia Detection
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hashirama21/neoplasia-detection/blob/main/RARE2026.ipynb)
+
 PPV@90Recall optimized pipeline for the [RARE26 Grand Challenge](https://grand-challenge.org/challenges/rare26/).
 
 ## Architecture
