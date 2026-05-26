@@ -126,12 +126,21 @@ class EnsemblePredictor:
             "threshold": self.threshold,
         }
 
+    def _tta_tensor_views(self, x: torch.Tensor) -> list[torch.Tensor]:
+        """8 deterministic TTA views applied directly to a float tensor batch (B, C, H, W)."""
+        return [
+            x,
+            TF.hflip(x),
+            TF.vflip(x),
+            TF.hflip(TF.vflip(x)),
+            TF.rotate(x, 15),
+            TF.rotate(x, -15),
+            TF.adjust_saturation(x, 1.2),
+            TF.adjust_contrast(x, 1.15),
+        ]
+
     @torch.no_grad()
-    def predict_loader(
-        self,
-        loader: DataLoader,
-        val_transform: Optional[transforms.Compose] = None,
-    ) -> dict:
+    def predict_loader(self, loader: DataLoader) -> dict:
         """Batch prediction for evaluation."""
         if not self.models:
             raise RuntimeError("No models loaded.")
@@ -141,10 +150,16 @@ class EnsemblePredictor:
         for batch in tqdm(loader, desc="Inference"):
             images = batch["image"].to(self.device, non_blocking=True)
             for i, model in enumerate(self.models):
-                logits = model(images).squeeze(-1)
+                if self.cfg.tta.enabled:
+                    views = self._tta_tensor_views(images)
+                    view_logits = torch.stack(
+                        [model(v).squeeze(-1) for v in views]
+                    )
+                    logits = view_logits.mean(dim=0)
+                else:
+                    logits = model(images).squeeze(-1)
                 all_logits_per_model[i].append(logits.cpu().numpy())
 
-        # Aggregate: mean logits across models
         ensemble_logits = np.mean(
             [np.concatenate(logits) for logits in all_logits_per_model], axis=0
         )

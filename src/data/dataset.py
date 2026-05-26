@@ -83,6 +83,22 @@ class MotionBlur:
         return img.filter(ImageFilter.GaussianBlur(radius=kernel_size // 2))
 
 
+class GaussianNoise:
+    """Additive Gaussian noise — simulates sensor noise variability across scopes."""
+
+    def __init__(self, prob: float = 0.2, std: float = 0.05):
+        self.prob = prob
+        self.std = std
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        if random.random() > self.prob:
+            return img
+        arr = np.array(img, dtype=np.float32) / 255.0
+        noise = np.random.normal(0, self.std, arr.shape).astype(np.float32)
+        arr = (arr + noise).clip(0.0, 1.0)
+        return Image.fromarray((arr * 255).astype(np.uint8))
+
+
 def build_train_transforms(cfg) -> transforms.Compose:
     aug = cfg.augmentation.train
     norm = cfg.normalize
@@ -105,6 +121,7 @@ def build_train_transforms(cfg) -> transforms.Compose:
         SpecularHighlightSimulation(prob=aug.specular_highlight_prob),
         NBISimulation(prob=aug.nbi_simulation_prob),
         MotionBlur(prob=aug.motion_blur_prob),
+        GaussianNoise(prob=aug.gaussian_noise_prob),
         transforms.ToTensor(),
         transforms.Normalize(mean=norm.mean, std=norm.std),
     ])

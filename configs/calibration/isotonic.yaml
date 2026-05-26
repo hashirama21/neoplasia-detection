@@ -1,6 +1,6 @@
 _target_: src.calibration.calibrator.PPVCalibrator
 
-method: isotonic  # isotonic | temperature | platt
+method: isotonic  # isotonic | temperature
 
 isotonic:
   out_of_bounds: clip

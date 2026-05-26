@@ -131,8 +131,10 @@ class PatchCoreDetector:
                 hooks.append(module.register_forward_hook(hook_fn))
                 break
 
+        if image_tensor.dim() == 3:
+            image_tensor = image_tensor.unsqueeze(0)
         model.eval()
-        _ = model.backbone(image_tensor.unsqueeze(0).to(device))
+        _ = model.backbone(image_tensor.to(device))
         for h in hooks:
             h.remove()
 
@@ -159,7 +161,7 @@ class PatchCoreDetector:
     def load(self, path: str) -> "PatchCoreDetector":
         with open(path, "rb") as f:
             data = pickle.load(f)
-        self.memory_bank = data["memory_bank"]
+        self.memory_bank = data["memory_bank"].cpu()
         self.feature_layer = data["feature_layer"]
         self.k_neighbors = data["k_neighbors"]
         self._fitted = True

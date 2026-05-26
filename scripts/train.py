@@ -48,7 +48,7 @@ def main(cfg: DictConfig) -> float:
     # Step 1 (optional): CV gamma sweep to find best gamma_neg
     if cfg.training.cross_validation.enabled:
         log.info("Running CV gamma sweep...")
-        trainer = Rare26Trainer(cfg.training)
+        trainer = Rare26Trainer(cfg)
         cv_result = trainer.run_cv_gamma_sweep(
             train_csv=cfg.data.train_csv,
             gamma_values=cfg.training.loss.gamma_neg_sweep,
@@ -62,7 +62,7 @@ def main(cfg: DictConfig) -> float:
     # Step 2: Build datamodule and model
     dm = Rare26DataModule(cfg.data)
     model = Rare26Model(cfg.model).to(device)
-    trainer = Rare26Trainer(cfg.training)
+    trainer = Rare26Trainer(cfg)
 
     # Step 3: Train
     log.info("Starting training...")

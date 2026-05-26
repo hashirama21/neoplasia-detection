@@ -24,6 +24,7 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torchvision.transforms as T
 from PIL import Image
@@ -81,7 +82,6 @@ def tta_predict(
 ) -> float:
     """TTA prediction — deterministic 8 views."""
     import torchvision.transforms.functional as TF
-    import numpy as np
 
     views = [
         transform(image),
@@ -141,10 +141,9 @@ def run_inference() -> None:
         # Ensemble + TTA
         logits = [tta_predict(m, image, transform, device) for m in models]
         mean_logit = sum(logits) / len(logits)
-        raw_prob = float(1 / (1 + torch.exp(torch.tensor(-mean_logit)).item()))
+        raw_prob = float(1 / (1 + np.exp(-mean_logit)))
 
         if calibrator is not None:
-            import numpy as np
             cal_prob = float(calibrator.transform(np.array([raw_prob]))[0])
         else:
             cal_prob = raw_prob

@@ -10,7 +10,6 @@ Supports:
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from pathlib import Path
@@ -19,7 +18,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.cuda.amp as amp
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
@@ -27,7 +26,7 @@ from tqdm import tqdm
 from src.data.dataset import Rare26Dataset, build_train_transforms, build_val_transforms
 from src.losses.asymmetric_loss import AsymmetricLoss
 from src.models.rare26_model import Rare26Model
-from src.utils.metrics import bootstrap_ppv_at_recall, find_optimal_threshold
+from src.utils.metrics import bootstrap_ppv_at_recall
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,6 @@ class CheckpointManager:
         torch.save({"epoch": epoch, "model_state": model.state_dict(), "score": score}, path)
         self.checkpoints.append((score, path))
         self.checkpoints.sort(key=lambda x: x[0], reverse=True)
-        # Remove worst checkpoints beyond top_k
         while len(self.checkpoints) > self.top_k:
             _, worst_path = self.checkpoints.pop()
             if worst_path.exists():
@@ -83,7 +81,9 @@ class CheckpointManager:
 
 class Rare26Trainer:
     def __init__(self, cfg: DictConfig):
-        self.cfg = cfg
+        self.cfg = cfg.training
+        self.data_cfg = cfg.data
+        self.model_cfg = cfg.model
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     def build_optimizer(self, model: Rare26Model) -> torch.optim.Optimizer:
@@ -107,28 +107,33 @@ class Rare26Trainer:
         model.train()
         total_loss = 0.0
         n_batches = 0
+        accumulate = self.cfg.accumulate_grad_batches
 
+        optimizer.zero_grad()
         with tqdm(loader, desc=f"Train E{epoch}", leave=False) as pbar:
             for step, batch in enumerate(pbar):
                 images = batch["image"].to(self.device, non_blocking=True)
                 labels = batch["label"].to(self.device, non_blocking=True)
 
-                optimizer.zero_grad()
                 with amp.autocast(enabled=self.cfg.mixed_precision):
                     logits = model(images)
-                    loss = criterion(logits, labels)
+                    loss = criterion(logits, labels) / accumulate
 
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), self.cfg.gradient_clip_val
-                )
-                scaler.step(optimizer)
-                scaler.update()
 
-                total_loss += loss.item()
+                if (step + 1) % accumulate == 0 or (step + 1) == len(loader):
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), self.cfg.gradient_clip_val
+                    )
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+
+                unscaled_loss = loss.item() * accumulate
+                total_loss += unscaled_loss
                 n_batches += 1
-                pbar.set_postfix(loss=f"{loss.item():.4f}")
+                pbar.set_postfix(loss=f"{unscaled_loss:.4f}")
 
         return {"train_loss": total_loss / max(n_batches, 1)}
 
@@ -150,13 +155,13 @@ class Rare26Trainer:
 
         logits = torch.cat(all_logits).numpy()
         labels = torch.cat(all_labels).numpy()
-        probs = 1 / (1 + np.exp(-logits))  # sigmoid
+        probs = 1 / (1 + np.exp(-logits))
 
         result = bootstrap_ppv_at_recall(
             y_true=labels,
             y_score=probs,
             threshold=threshold,
-            n_iterations=200,  # Fast evaluation during training (200 iters)
+            n_iterations=200,
         )
         return {
             "val_ppv_at_90recall": result["median_ppv"],
@@ -176,8 +181,7 @@ class Rare26Trainer:
         Cross-validation sweep over gamma_neg values.
         Returns the gamma_neg that maximizes median PPV@90Recall.
         """
-        from src.data.dataset import Rare26Dataset
-        full_dataset = Rare26Dataset(train_csv, transform=build_val_transforms(self.cfg.data))
+        full_dataset = Rare26Dataset(train_csv, transform=build_val_transforms(self.data_cfg))
         labels = full_dataset.labels
 
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
@@ -188,30 +192,29 @@ class Rare26Trainer:
         for fold, (train_idx, val_idx) in enumerate(skf.split(np.zeros(len(labels)), labels)):
             logger.info("Fold %d/%d", fold + 1, n_splits)
             train_sub = Subset(
-                Rare26Dataset(train_csv, transform=build_train_transforms(self.cfg.data)),
+                Rare26Dataset(train_csv, transform=build_train_transforms(self.data_cfg)),
                 train_idx,
             )
             val_sub = Subset(
-                Rare26Dataset(train_csv, transform=build_val_transforms(self.cfg.data)),
+                Rare26Dataset(train_csv, transform=build_val_transforms(self.data_cfg)),
                 val_idx,
             )
 
             for gamma_neg in gamma_values:
-                model = Rare26Model(self.cfg.model).to(self.device)
+                model = Rare26Model(self.model_cfg).to(self.device)
                 criterion = AsymmetricLoss(
                     gamma_neg=gamma_neg,
-                    gamma_pos=self.cfg.training.loss.gamma_pos,
-                    clip=self.cfg.training.loss.clip,
+                    gamma_pos=self.cfg.loss.gamma_pos,
+                    clip=self.cfg.loss.clip,
                 )
                 optimizer = self.build_optimizer(model)
-                scaler = amp.GradScaler(enabled=self.cfg.training.mixed_precision)
+                scaler = amp.GradScaler(enabled=self.cfg.mixed_precision)
 
-                train_loader = DataLoader(train_sub, batch_size=self.cfg.data.batch_size,
+                train_loader = DataLoader(train_sub, batch_size=self.data_cfg.batch_size,
                                           shuffle=True, num_workers=4)
-                val_loader = DataLoader(val_sub, batch_size=self.cfg.data.batch_size * 2,
+                val_loader = DataLoader(val_sub, batch_size=self.data_cfg.batch_size * 2,
                                         shuffle=False, num_workers=4)
 
-                # Train 10 epochs for quick CV estimate
                 for epoch in range(10):
                     self.train_one_epoch(model, train_loader, optimizer, criterion, scaler, epoch)
 
@@ -252,7 +255,7 @@ class Rare26Trainer:
             mode=self.cfg.early_stopping.mode,
         )
         ckpt_manager = CheckpointManager(
-            save_dir=str(Path(output_dir) / "checkpoints"),
+            save_dir=str(output_dir),
             top_k=self.cfg.logging.save_top_k,
         )
 
