@@ -11,6 +11,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import timm
 from omegaconf import DictConfig
 
@@ -70,17 +71,46 @@ class Rare26Model(nn.Module):
             dropout=cfg.head.dropout,
         )
 
+    def _interpolate_pos_embed(self, state_dict: dict) -> dict:
+        """Bicubic interpolation of pos_embed when checkpoint and model resolutions differ."""
+        if "pos_embed" not in state_dict:
+            return state_dict
+
+        src = state_dict["pos_embed"]          # (1, N_src+1, D)
+        tgt = self.backbone.pos_embed          # (1, N_tgt+1, D)
+
+        if src.shape == tgt.shape:
+            return state_dict
+
+        cls_tok   = src[:, :1]                 # (1, 1, D)
+        src_patch = src[:, 1:].float()         # (1, N_src, D)
+        tgt_n     = tgt.shape[1] - 1
+
+        h_src = w_src = int(src_patch.shape[1] ** 0.5)
+        h_tgt = w_tgt = int(tgt_n ** 0.5)
+
+        src_patch = src_patch.reshape(1, h_src, w_src, -1).permute(0, 3, 1, 2)
+        tgt_patch = F.interpolate(src_patch, size=(h_tgt, w_tgt), mode="bicubic", align_corners=False)
+        tgt_patch = tgt_patch.permute(0, 2, 3, 1).reshape(1, tgt_n, -1)
+
+        state_dict["pos_embed"] = torch.cat([cls_tok, tgt_patch], dim=1).to(src.dtype)
+        logger.info(
+            "pos_embed interpolated %s → %s (src %dx%d → tgt %dx%d patches)",
+            list(src.shape), list(state_dict["pos_embed"].shape),
+            h_src, w_src, h_tgt, w_tgt,
+        )
+        return state_dict
+
     def _load_gastronet_weights(self, checkpoint_path: str) -> None:
         logger.info("Loading GastroNet-5M weights from %s", checkpoint_path)
         state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
-        # Handle various checkpoint formats
         for prefix in ("backbone.", "model.", "encoder."):
             if any(k.startswith(prefix) for k in state_dict.keys()):
-                state_dict = {
-                    k.replace(prefix, ""): v for k, v in state_dict.items()
-                }
+                state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
                 break
+
+        state_dict = self._interpolate_pos_embed(state_dict)
 
         msg = self.backbone.load_state_dict(state_dict, strict=False)
         logger.info("Checkpoint loaded. Missing: %d, Unexpected: %d",

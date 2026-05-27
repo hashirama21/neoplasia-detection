@@ -3,7 +3,7 @@ _target_: src.models.rare26_model.Rare26Model
 backbone:
   name: vit_base_patch14_dinov2.lvd142m
   pretrained: false
-  img_size: 336
+  img_size: 384
   num_classes: 0
 
 lora:

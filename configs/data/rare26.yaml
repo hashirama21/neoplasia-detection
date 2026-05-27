@@ -4,8 +4,8 @@ train_csv: ${paths.data_dir}/train.csv
 val_selection_csv: ${paths.data_dir}/val_selection.csv
 val_calibration_csv: ${paths.data_dir}/val_calibration.csv
 
-image_size: 336
-batch_size: 16
+image_size: 384
+batch_size: 12
 num_workers: ${num_workers}
 pin_memory: ${pin_memory}
 
@@ -37,8 +37,8 @@ augmentation:
     motion_blur_prob: 0.2
     gaussian_noise_prob: 0.2
   val:
-    resize: 336
-    center_crop: 336
+    resize: 416
+    center_crop: 384
 
 normalize:
   mean: [0.485, 0.456, 0.406]
