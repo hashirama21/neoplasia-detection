@@ -17,7 +17,6 @@ from typing import Optional
 
 import numpy as np
 import torch
-import torch.cuda.amp as amp
 from omegaconf import DictConfig
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader, Subset
@@ -101,27 +100,35 @@ class Rare26Trainer:
         loader: DataLoader,
         optimizer: torch.optim.Optimizer,
         criterion: torch.nn.Module,
-        scaler: amp.GradScaler,
+        scaler: torch.amp.GradScaler,
         epoch: int,
     ) -> dict:
         model.train()
         total_loss = 0.0
         n_batches = 0
         accumulate = self.cfg.accumulate_grad_batches
+        n_batches_total = len(loader)
 
         optimizer.zero_grad()
+        window_start = 0
         with tqdm(loader, desc=f"Train E{epoch}", leave=False) as pbar:
             for step, batch in enumerate(pbar):
                 images = batch["image"].to(self.device, non_blocking=True)
                 labels = batch["label"].to(self.device, non_blocking=True)
 
-                with amp.autocast(enabled=self.cfg.mixed_precision):
+                is_last = (step + 1) == n_batches_total
+                is_update = (step + 1) % accumulate == 0 or is_last
+
+                # Scale by the actual number of micro-batches in this window
+                window_size = (step - window_start + 1) if is_update else accumulate
+
+                with torch.amp.autocast("cuda", enabled=self.cfg.mixed_precision):
                     logits = model(images)
-                    loss = criterion(logits, labels) / accumulate
+                    loss = criterion(logits, labels) / window_size
 
                 scaler.scale(loss).backward()
 
-                if (step + 1) % accumulate == 0 or (step + 1) == len(loader):
+                if is_update:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(
                         model.parameters(), self.cfg.gradient_clip_val
@@ -129,8 +136,9 @@ class Rare26Trainer:
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad()
+                    window_start = step + 1
 
-                unscaled_loss = loss.item() * accumulate
+                unscaled_loss = loss.item() * window_size
                 total_loss += unscaled_loss
                 n_batches += 1
                 pbar.set_postfix(loss=f"{unscaled_loss:.4f}")
@@ -208,7 +216,7 @@ class Rare26Trainer:
                     clip=self.cfg.loss.clip,
                 )
                 optimizer = self.build_optimizer(model)
-                scaler = amp.GradScaler(enabled=self.cfg.mixed_precision)
+                scaler = torch.amp.GradScaler("cuda", init_scale=2**8, enabled=self.cfg.mixed_precision)
 
                 train_loader = DataLoader(train_sub, batch_size=self.data_cfg.batch_size,
                                           shuffle=True, num_workers=4)
@@ -248,7 +256,7 @@ class Rare26Trainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.cfg.epochs, eta_min=self.cfg.scheduler.eta_min
         )
-        scaler = amp.GradScaler(enabled=self.cfg.mixed_precision)
+        scaler = torch.amp.GradScaler("cuda", init_scale=2**8, enabled=self.cfg.mixed_precision)
         early_stopping = EarlyStopping(
             patience=self.cfg.early_stopping.patience,
             min_delta=self.cfg.early_stopping.min_delta,

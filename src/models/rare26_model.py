@@ -85,13 +85,24 @@ class Rare26Model(nn.Module):
         cls_tok   = src[:, :1]                 # (1, 1, D)
         src_patch = src[:, 1:].float()         # (1, N_src, D)
         tgt_n     = tgt.shape[1] - 1
+        src_n     = src_patch.shape[1]
 
-        h_src = w_src = int(src_patch.shape[1] ** 0.5)
-        h_tgt = w_tgt = int(tgt_n ** 0.5)
+        h_src = int(src_n ** 0.5)
+        w_src = src_n // h_src          # handles non-square grids
+        if h_src * w_src != src_n:
+            raise ValueError(
+                f"Cannot infer patch grid from N={src_n} tokens "
+                f"(tried {h_src}×{w_src}={h_src * w_src}). "
+                "Checkpoint may use a non-standard resolution."
+            )
+        h_tgt = int(tgt_n ** 0.5)
+        w_tgt = tgt_n // h_tgt
+        if h_tgt * w_tgt != tgt_n:
+            raise ValueError(f"Model target patch grid {tgt_n} is not factorizable.")
 
         src_patch = src_patch.reshape(1, h_src, w_src, -1).permute(0, 3, 1, 2)
         tgt_patch = F.interpolate(src_patch, size=(h_tgt, w_tgt), mode="bicubic", align_corners=False)
-        tgt_patch = tgt_patch.permute(0, 2, 3, 1).reshape(1, tgt_n, -1)
+        tgt_patch = tgt_patch.permute(0, 2, 3, 1).reshape(1, h_tgt * w_tgt, -1)
 
         state_dict["pos_embed"] = torch.cat([cls_tok, tgt_patch], dim=1).to(src.dtype)
         logger.info(
@@ -107,7 +118,10 @@ class Rare26Model(nn.Module):
 
         for prefix in ("backbone.", "model.", "encoder."):
             if any(k.startswith(prefix) for k in state_dict.keys()):
-                state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
+                state_dict = {
+                    (k[len(prefix):] if k.startswith(prefix) else k): v
+                    for k, v in state_dict.items()
+                }
                 break
 
         state_dict = self._interpolate_pos_embed(state_dict)

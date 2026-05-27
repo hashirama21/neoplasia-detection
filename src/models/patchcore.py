@@ -133,6 +133,10 @@ class PatchCoreDetector:
 
         if image_tensor.dim() == 3:
             image_tensor = image_tensor.unsqueeze(0)
+        elif image_tensor.dim() != 4:
+            raise ValueError(f"image_tensor must be 3-D or 4-D, got {image_tensor.dim()}-D")
+        if image_tensor.shape[0] != 1:
+            raise ValueError(f"score() expects a single image (batch=1), got batch={image_tensor.shape[0]}")
         model.eval()
         _ = model.backbone(image_tensor.to(device))
         for h in hooks:
