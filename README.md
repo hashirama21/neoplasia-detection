@@ -12,7 +12,7 @@ GastroNet-5M DINOv2 ViT-Base (336×336)
     + Lightweight head: Linear(768→256→1)
     + AsymmetricLoss (gamma_neg CV-tuned)
     + Post-training: Isotonic Regression calibration
-    + Threshold: optimized via 1000-bootstrap simulation at 1% prevalence
+    + Threshold: optimized via 1000-bootstrap simulation at 1% prevalence for 
     + Inference: TTA (8 views) × Ensemble (5 models)
 ```
 
