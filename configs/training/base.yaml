@@ -1,6 +1,6 @@
 _target_: src.training.trainer.Rare26Trainer
 
-epochs: 50
+epochs: 30
 gradient_clip_val: 1.0
 accumulate_grad_batches: 2
 
@@ -12,7 +12,7 @@ optimizer:
 
 scheduler:
   _target_: torch.optim.lr_scheduler.CosineAnnealingLR
-  T_max: 50
+  T_max: ${training.epochs}
   eta_min: 1.0e-7
 
 loss:

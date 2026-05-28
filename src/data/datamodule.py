@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from omegaconf import DictConfig
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import GroupShuffleSplit
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from src.data.dataset import Rare26Dataset, build_train_transforms, build_val_transforms
@@ -36,10 +36,19 @@ class Rare26DataModule:
         self.cfg = cfg
         self._prepare_val_splits()
 
+    @staticmethod
+    def _extract_patient_id(image_path: str) -> str:
+        """Extract patient_id from filename. Expects patXX_... pattern; falls back to full stem."""
+        stem = Path(image_path).stem
+        part = stem.split("_")[0]
+        return part if part.lower().startswith("pat") else stem
+
     def _prepare_val_splits(self) -> None:
         """
-        If separate val CSVs don't exist, split the official validation set.
-        70% → val_selection, 30% → val_calibration (stratified).
+        Split the official validation set by patient_id (GroupShuffleSplit).
+        70% of patients → val_selection, 30% → val_calibration.
+        Image-level stratification is not sufficient: DINOv2 can memorize
+        patient endoscopic texture, so patients must never span both splits.
         """
         sel_path = Path(self.cfg.val_selection_csv)
         cal_path = Path(self.cfg.val_calibration_csv)
@@ -48,7 +57,6 @@ class Rare26DataModule:
             logger.info("Using existing val_selection and val_calibration splits.")
             return
 
-        # If only one val CSV provided, split it
         val_csvs = [
             p for p in Path(self.cfg.train_csv).parent.glob("val*.csv")
             if "selection" not in str(p) and "calibration" not in str(p)
@@ -58,21 +66,28 @@ class Rare26DataModule:
             return
 
         val_df = pd.read_csv(val_csvs[0])
+        patient_ids = val_df["image_path"].apply(self._extract_patient_id).values
         labels = val_df["label"].values
 
-        splitter = StratifiedShuffleSplit(
+        splitter = GroupShuffleSplit(
             n_splits=1,
             test_size=1 - self.cfg.val_selection_ratio,
             random_state=self.cfg.val_split_seed,
         )
-        sel_idx, cal_idx = next(splitter.split(np.zeros(len(labels)), labels))
+        sel_idx, cal_idx = next(splitter.split(np.zeros(len(labels)), labels, groups=patient_ids))
 
         val_df.iloc[sel_idx].to_csv(sel_path, index=False)
         val_df.iloc[cal_idx].to_csv(cal_path, index=False)
 
+        n_sel_pos = labels[sel_idx].sum()
+        n_cal_pos = labels[cal_idx].sum()
+        n_sel_pat = len(set(patient_ids[sel_idx]))
+        n_cal_pat = len(set(patient_ids[cal_idx]))
         logger.info(
-            "Val split created — selection: %d, calibration: %d",
-            len(sel_idx), len(cal_idx),
+            "Val split by patient — selection: %d images (%d pos, %d patients) | "
+            "calibration: %d images (%d pos, %d patients)",
+            len(sel_idx), n_sel_pos, n_sel_pat,
+            len(cal_idx), n_cal_pos, n_cal_pat,
         )
 
     def train_dataloader(self) -> DataLoader:
