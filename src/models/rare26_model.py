@@ -132,10 +132,15 @@ class Rare26Model(nn.Module):
 
 
     def _apply_lora(self, lora_cfg: DictConfig) -> None:
-        """Apply LoRA to TIMM ViT backbone."""
+        """Apply LoRA to TIMM ViT backbone.
 
+        Uses inject_adapter_in_model instead of get_peft_model to avoid wrapping
+        the backbone in PeftModel, which injects NLP forward args (input_ids)
+        incompatible with timm VisionTransformer.forward(x).
+        """
         try:
-            from peft import get_peft_model, LoraConfig
+            from peft import LoraConfig, inject_adapter_in_model
+            from peft.tuners.lora import mark_only_lora_as_trainable
 
             lora_config = LoraConfig(
                 r=lora_cfg.rank,
@@ -144,37 +149,20 @@ class Rare26Model(nn.Module):
                 target_modules=list(lora_cfg.target_modules),
                 bias="none",
             )
+            self.backbone = inject_adapter_in_model(lora_config, self.backbone)
+            mark_only_lora_as_trainable(self.backbone)
 
-            self.backbone = get_peft_model(self.backbone, lora_config)
-
-            self.backbone.print_trainable_parameters()
-
+            trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in self.backbone.parameters())
+            logger.info(
+                "LoRA applied: trainable params: %d || all params: %d || trainable%%: %.4f",
+                trainable, total, 100 * trainable / total,
+            )
         except ImportError:
             logger.warning(
                 "peft not installed — falling back to differential learning rates only. "
                 "Install with: pip install peft"
             )
-
-    """
-    def _apply_lora(self, lora_cfg: DictConfig) -> None:
-        
-        try:
-            from peft import get_peft_model, LoraConfig, TaskType
-            lora_config = LoraConfig(
-                task_type=TaskType.FEATURE_EXTRACTION,
-                r=lora_cfg.rank,
-                lora_alpha=lora_cfg.alpha,
-                lora_dropout=lora_cfg.dropout,
-                target_modules=list(lora_cfg.target_modules),
-                bias="none",
-            )
-            self.backbone = get_peft_model(self.backbone, lora_config)
-            self.backbone.print_trainable_parameters()
-        except ImportError:
-            logger.warning(
-                "peft not installed — falling back to differential learning rates only. "
-                "Install with: pip install peft"
-            )"""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)
