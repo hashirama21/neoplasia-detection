@@ -52,17 +52,17 @@ class AsymmetricLoss(nn.Module):
         logits = logits.squeeze(-1)
         targets = targets.float()
 
-        probs = torch.sigmoid(logits)
+        # Compute in fp32 to avoid fp16 underflow: clamp(min=1e-8) rounds to 0
+        # in fp16 (min positive fp16 ≈ 6e-8), turning log(0) into -inf → NaN.
+        probs = torch.sigmoid(logits.float())
 
-        # Positive term: standard BCE with positive focusing
-        loss_pos = targets * torch.log(probs.clamp(min=1e-8)) * (
+        loss_pos = targets * torch.log(probs.clamp(min=1e-7)) * (
             (1.0 - probs) ** self.gamma_pos
         )
 
-        # Negative term: clip + focusing to suppress easy negatives
         probs_neg = (probs + self.clip).clamp(max=1.0)
         loss_neg = (1.0 - targets) * torch.log(
-            (1.0 - probs_neg).clamp(min=1e-8)
+            (1.0 - probs_neg).clamp(min=1e-7)
         ) * (probs_neg ** self.gamma_neg)
 
         loss = -(loss_pos + loss_neg)
