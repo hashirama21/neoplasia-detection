@@ -130,8 +130,34 @@ class Rare26Model(nn.Module):
         logger.info("Checkpoint loaded. Missing: %d, Unexpected: %d",
                     len(msg.missing_keys), len(msg.unexpected_keys))
 
+
     def _apply_lora(self, lora_cfg: DictConfig) -> None:
-        """Apply LoRA to target modules for parameter-efficient fine-tuning."""
+        """Apply LoRA to TIMM ViT backbone."""
+
+        try:
+            from peft import get_peft_model, LoraConfig
+
+            lora_config = LoraConfig(
+                r=lora_cfg.rank,
+                lora_alpha=lora_cfg.alpha,
+                lora_dropout=lora_cfg.dropout,
+                target_modules=list(lora_cfg.target_modules),
+                bias="none",
+            )
+
+            self.backbone = get_peft_model(self.backbone, lora_config)
+
+            self.backbone.print_trainable_parameters()
+
+        except ImportError:
+            logger.warning(
+                "peft not installed — falling back to differential learning rates only. "
+                "Install with: pip install peft"
+            )
+
+    """
+    def _apply_lora(self, lora_cfg: DictConfig) -> None:
+        
         try:
             from peft import get_peft_model, LoraConfig, TaskType
             lora_config = LoraConfig(
@@ -148,7 +174,7 @@ class Rare26Model(nn.Module):
             logger.warning(
                 "peft not installed — falling back to differential learning rates only. "
                 "Install with: pip install peft"
-            )
+            )"""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)
