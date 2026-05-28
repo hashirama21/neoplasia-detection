@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 
-def build_val_transform(img_size: int = 384, resize_size: int = 416) -> T.Compose:
+def build_val_transform(img_size: int = 392, resize_size: int = 448) -> T.Compose:
     return T.Compose([
         T.Resize(resize_size, interpolation=T.InterpolationMode.BICUBIC),
         T.CenterCrop(img_size),
@@ -111,7 +111,7 @@ def run_inference() -> None:
     log.info("Loading %d model(s) for ensemble.", len(checkpoint_paths))
 
     models = [load_model(str(p), device) for p in checkpoint_paths]
-    transform = build_val_transform(img_size=384)
+    transform = build_val_transform(img_size=392)
 
     # Load calibrator
     cal_dir = WEIGHTS_DIR / "calibration"
