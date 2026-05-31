@@ -86,14 +86,15 @@ class Rare26Model(nn.Module):
             dynamic_img_size=True,
         )
 
-        if cfg.checkpoint_path and Path(cfg.checkpoint_path).exists():
-            self._load_gastronet_weights(cfg.checkpoint_path)
-        else:
-            logger.warning(
-                "GastroNet-5M checkpoint not found at %s. "
-                "Using random initialization.",
-                cfg.checkpoint_path,
-            )
+        if cfg.checkpoint_path:
+            if Path(cfg.checkpoint_path).exists():
+                self._load_gastronet_weights(cfg.checkpoint_path)
+            else:
+                logger.warning(
+                    "GastroNet-5M checkpoint not found at %s.",
+                    cfg.checkpoint_path,
+                )
+        # empty checkpoint_path = intentional (weights restored via load_state_dict)
 
         if cfg.lora.enabled:
             self._apply_lora(cfg.lora)
