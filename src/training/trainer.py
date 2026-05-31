@@ -25,7 +25,7 @@ from tqdm import tqdm
 from src.data.dataset import Rare26Dataset, build_train_transforms, build_val_transforms
 from src.losses.asymmetric_loss import AsymmetricLoss
 from src.models.rare26_model import Rare26Model
-from src.utils.metrics import bootstrap_ppv_at_recall
+from src.utils.metrics import ppv_at_recall
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,13 @@ class CheckpointManager:
         self.monitor = monitor
         self.checkpoints: list[tuple[float, Path]] = []
 
-    def save(self, model: torch.nn.Module, epoch: int, score: float, cfg: DictConfig) -> None:
+    def best_score(self) -> float:
+        return self.checkpoints[-1][0] if self.checkpoints else float("-inf")
+
+    def save(self, model: torch.nn.Module, epoch: int, score: float, cfg: DictConfig) -> bool:
+        """Save checkpoint only when score enters the top-k. Returns True if saved."""
+        if len(self.checkpoints) >= self.top_k and score <= self.best_score():
+            return False
         path = self.save_dir / f"epoch_{epoch:03d}_{self.monitor}_{score:.4f}.pt"
         torch.save({"epoch": epoch, "model_state": model.state_dict(), "score": score}, path)
         self.checkpoints.append((score, path))
@@ -73,6 +79,7 @@ class CheckpointManager:
             if worst_path.exists():
                 worst_path.unlink()
         logger.info("Saved checkpoint: %s (score=%.4f)", path.name, score)
+        return True
 
     def best_checkpoint(self) -> Optional[Path]:
         return self.checkpoints[0][1] if self.checkpoints else None
@@ -146,12 +153,7 @@ class Rare26Trainer:
         return {"train_loss": total_loss / max(n_batches, 1)}
 
     @torch.no_grad()
-    def evaluate(
-        self,
-        model: Rare26Model,
-        loader: DataLoader,
-        threshold: float = 0.5,
-    ) -> dict:
+    def evaluate(self, model: Rare26Model, loader: DataLoader) -> dict:
         model.eval()
         all_logits, all_labels = [], []
 
@@ -165,15 +167,15 @@ class Rare26Trainer:
         labels = torch.cat(all_labels).numpy()
         probs = 1 / (1 + np.exp(-logits))
 
-        result = bootstrap_ppv_at_recall(
-            y_true=labels,
-            y_score=probs,
-            threshold=threshold,
-            n_iterations=200,
-        )
+        # Find the most selective threshold that still achieves 90% recall,
+        # then measure PPV at that operating point. This is the correct training
+        # monitor: it reflects the competition metric without a fixed threshold
+        # that would give recall=1 whenever the model predicts everything positive.
+        ppv, opt_threshold = ppv_at_recall(labels, probs, target_recall=0.90)
+
         return {
-            "val_ppv_at_90recall": result["median_ppv"],
-            "val_median_recall": result["median_recall"],
+            "val_ppv_at_90recall": ppv,
+            "val_opt_threshold": opt_threshold,
             "probs": probs,
             "labels": labels,
         }
@@ -214,6 +216,7 @@ class Rare26Trainer:
                     gamma_neg=gamma_neg,
                     gamma_pos=self.cfg.loss.gamma_pos,
                     clip=self.cfg.loss.clip,
+                    pos_weight=float(getattr(self.data_cfg, "pos_weight_factor", 1.0)),
                 )
                 optimizer = self.build_optimizer(model)
                 scaler = torch.amp.GradScaler("cuda", init_scale=2**8, enabled=self.cfg.mixed_precision)
@@ -251,6 +254,7 @@ class Rare26Trainer:
             gamma_neg=self.cfg.loss.gamma_neg,
             gamma_pos=self.cfg.loss.gamma_pos,
             clip=self.cfg.loss.clip,
+            pos_weight=float(getattr(self.data_cfg, "pos_weight_factor", 1.0)),
         )
         optimizer = self.build_optimizer(model)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -280,9 +284,9 @@ class Rare26Trainer:
             elapsed = time.time() - t0
 
             logger.info(
-                "E%03d | loss=%.4f | PPV@90R=%.4f | recall=%.4f | %.1fs",
+                "E%03d | loss=%.4f | PPV@90R=%.4f | thr=%.3f | %.1fs",
                 epoch, train_metrics["train_loss"], ppv,
-                val_metrics["val_median_recall"], elapsed,
+                val_metrics["val_opt_threshold"], elapsed,
             )
 
             ckpt_manager.save(model, epoch, ppv, self.cfg)

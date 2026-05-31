@@ -10,9 +10,14 @@ num_workers: ${num_workers}
 pin_memory: ${pin_memory}
 
 # Class imbalance — 158 pos / 2937 neg
+# pos_weight_factor: passed to AsymmetricLoss to upweight positive gradient
 pos_weight_factor: 18.6
 weighted_sampler: true
-oversample_factor: 3.0
+# sampler_pos_ratio: target fraction of positives per epoch (NOT 0.5 — that causes
+# the model to predict everything positive at the 1% test prevalence)
+sampler_pos_ratio: 0.15
+# oversample_factor: epoch size multiplier; 1.0 keeps it near the dataset size
+oversample_factor: 1.0
 
 # Stratified split of official validation set
 val_split_seed: 42

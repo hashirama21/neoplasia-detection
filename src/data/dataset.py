@@ -173,11 +173,18 @@ class Rare26Dataset(Dataset):
         label = torch.tensor(self.labels[idx], dtype=torch.float32)
         return {"image": image, "label": label, "path": str(img_path)}
 
-    def get_class_weights(self) -> torch.Tensor:
-        """Compute per-sample weights for WeightedRandomSampler."""
-        n_pos = self.labels.sum()
+    def get_class_weights(self, target_pos_ratio: float = 0.15) -> torch.Tensor:
+        """Per-sample weights for WeightedRandomSampler.
+
+        target_pos_ratio controls the fraction of positives drawn per epoch.
+        0.15 gives the model enough positive exposure without pushing the
+        training prior far from the 1% test prevalence. Avoid 0.5 (full
+        balance): it causes the model to predict positive for everything at
+        inference time.
+        """
+        n_pos = int(self.labels.sum())
         n_neg = len(self.labels) - n_pos
-        weight_pos = len(self.labels) / (2.0 * n_pos) if n_pos > 0 else 1.0
-        weight_neg = len(self.labels) / (2.0 * n_neg) if n_neg > 0 else 1.0
-        weights = np.where(self.labels == 1, weight_pos, weight_neg)
-        return torch.from_numpy(weights).float()
+        w_pos = target_pos_ratio / n_pos if n_pos > 0 else 1.0
+        w_neg = (1.0 - target_pos_ratio) / n_neg if n_neg > 0 else 1.0
+        weights = np.where(self.labels == 1, w_pos, w_neg)
+        return torch.from_numpy(weights.astype(np.float32))

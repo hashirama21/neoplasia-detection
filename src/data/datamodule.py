@@ -97,7 +97,8 @@ class Rare26DataModule:
         )
         sampler = None
         if self.cfg.weighted_sampler:
-            weights = dataset.get_class_weights()
+            target_pos_ratio = float(getattr(self.cfg, "sampler_pos_ratio", 0.15))
+            weights = dataset.get_class_weights(target_pos_ratio=target_pos_ratio)
             n_samples = int(len(dataset) * self.cfg.oversample_factor)
             sampler = WeightedRandomSampler(
                 weights=weights, num_samples=n_samples, replacement=True

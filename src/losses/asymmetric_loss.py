@@ -34,12 +34,14 @@ class AsymmetricLoss(nn.Module):
         gamma_pos: float = 1.0,
         clip: float = 0.05,
         reduction: str = "mean",
+        pos_weight: float = 1.0,
     ):
         super().__init__()
         self.gamma_neg = gamma_neg
         self.gamma_pos = gamma_pos
         self.clip = clip
         self.reduction = reduction
+        self.pos_weight = pos_weight
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -58,7 +60,7 @@ class AsymmetricLoss(nn.Module):
 
         loss_pos = targets * torch.log(probs.clamp(min=1e-7)) * (
             (1.0 - probs) ** self.gamma_pos
-        )
+        ) * self.pos_weight
 
         probs_neg = (probs + self.clip).clamp(max=1.0)
         loss_neg = (1.0 - targets) * torch.log(

@@ -6,8 +6,8 @@ Architecture designed for low-prevalence detection (PPV@90Recall metric).
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -35,10 +35,43 @@ class ClassificationHead(nn.Module):
         return self.net(x)
 
 
+class LoRALinear(nn.Module):
+    """Low-Rank Adaptation wrapper around nn.Linear.
+
+    Native implementation — no peft dependency. Freezes the base weight and
+    learns two small matrices (A, B) whose product approximates the full weight
+    update: ΔW = B @ A * (alpha / rank).
+    """
+
+    def __init__(self, linear: nn.Linear, rank: int, alpha: float, dropout: float = 0.0):
+        super().__init__()
+        self.linear = linear
+        d_out, d_in = linear.weight.shape
+        self.lora_A = nn.Parameter(torch.empty(rank, d_in))
+        self.lora_B = nn.Parameter(torch.zeros(d_out, rank))
+        self.scaling = alpha / rank
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        for p in self.linear.parameters():
+            p.requires_grad_(False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x) + (self.lora_dropout(x) @ self.lora_A.T @ self.lora_B.T) * self.scaling
+
+    def merge_weights(self) -> None:
+        """Fuse LoRA into the base weight for parameter-free inference."""
+        with torch.no_grad():
+            self.linear.weight.data += (self.lora_B @ self.lora_A) * self.scaling
+        for p in self.linear.parameters():
+            p.requires_grad_(True)
+        self.lora_A.requires_grad_(False)
+        self.lora_B.requires_grad_(False)
+
+
 class Rare26Model(nn.Module):
     """
     ViT-Base DINOv2 with GastroNet-5M pretrained weights.
-    Uses LoRA for parameter-efficient fine-tuning of the backbone.
+    Uses native LoRA for parameter-efficient fine-tuning of the backbone.
     """
 
     def __init__(self, cfg: DictConfig):
@@ -88,7 +121,7 @@ class Rare26Model(nn.Module):
         src_n     = src_patch.shape[1]
 
         h_src = int(src_n ** 0.5)
-        w_src = src_n // h_src          # handles non-square grids
+        w_src = src_n // h_src
         if h_src * w_src != src_n:
             raise ValueError(
                 f"Cannot infer patch grid from N={src_n} tokens "
@@ -127,52 +160,66 @@ class Rare26Model(nn.Module):
         state_dict = self._interpolate_pos_embed(state_dict)
 
         msg = self.backbone.load_state_dict(state_dict, strict=False)
-        logger.info("Checkpoint loaded. Missing: %d, Unexpected: %d",
-                    len(msg.missing_keys), len(msg.unexpected_keys))
-
+        logger.info(
+            "Checkpoint loaded. Missing: %d, Unexpected: %d",
+            len(msg.missing_keys), len(msg.unexpected_keys),
+        )
+        if msg.missing_keys:
+            logger.info("Missing keys (first 10): %s", msg.missing_keys[:10])
+        if msg.unexpected_keys:
+            logger.info("Unexpected keys: %s", msg.unexpected_keys[:10])
 
     def _apply_lora(self, lora_cfg: DictConfig) -> None:
-        """Apply LoRA to TIMM ViT backbone.
+        """Inject LoRA adapters into target modules of the TIMM ViT backbone.
 
-        Uses inject_adapter_in_model instead of get_peft_model to avoid wrapping
-        the backbone in PeftModel, which injects NLP forward args (input_ids)
-        incompatible with timm VisionTransformer.forward(x).
+        Replaces each matching nn.Linear with a LoRALinear that keeps the frozen
+        base weight and adds a trainable low-rank delta. All other backbone
+        parameters are then frozen so only LoRA adapters and the head are trained.
         """
-        try:
-            from peft import LoraConfig, inject_adapter_in_model
-            from peft.tuners.lora import mark_only_lora_as_trainable
+        target = set(lora_cfg.target_modules)
+        replaced = 0
 
-            lora_config = LoraConfig(
-                r=lora_cfg.rank,
-                lora_alpha=lora_cfg.alpha,
-                lora_dropout=lora_cfg.dropout,
-                target_modules=list(lora_cfg.target_modules),
-                bias="none",
-            )
-            self.backbone = inject_adapter_in_model(lora_config, self.backbone)
-            mark_only_lora_as_trainable(self.backbone)
+        for name, mod in list(self.backbone.named_modules()):
+            leaf_name = name.split(".")[-1]
+            if leaf_name in target and isinstance(mod, nn.Linear):
+                parent_name, child_name = name.rsplit(".", 1)
+                parent = self.backbone.get_submodule(parent_name)
+                setattr(
+                    parent,
+                    child_name,
+                    LoRALinear(mod, lora_cfg.rank, lora_cfg.alpha, lora_cfg.dropout),
+                )
+                replaced += 1
 
-            trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
-            total = sum(p.numel() for p in self.backbone.parameters())
-            logger.info(
-                "LoRA applied: trainable params: %d || all params: %d || trainable%%: %.4f",
-                trainable, total, 100 * trainable / total,
-            )
-        except ImportError:
+        if replaced == 0:
             logger.warning(
-                "peft not installed — falling back to differential learning rates only. "
-                "Install with: pip install peft"
+                "LoRA: no modules matched target_modules=%s. "
+                "Check backbone module names with: "
+                "[n for n, _ in model.backbone.named_modules()]",
+                list(target),
             )
+            return
+
+        for name, param in self.backbone.named_parameters():
+            if "lora_A" not in name and "lora_B" not in name:
+                param.requires_grad_(False)
+
+        trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+        total     = sum(p.numel() for p in self.backbone.parameters())
+        logger.info(
+            "LoRA applied to %d modules — trainable: %d / %d (%.4f%%)",
+            replaced, trainable, total, 100.0 * trainable / total,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)
         return self.head(features)
 
     def get_parameter_groups(self, backbone_lr: float, head_lr: float) -> list[dict]:
-        """Differential learning rates: low LR for backbone, high LR for head."""
+        """Differential learning rates: low LR for backbone (LoRA), high LR for head."""
         backbone_params = [p for p in self.backbone.parameters() if p.requires_grad]
         head_params = list(self.head.parameters())
         return [
             {"params": backbone_params, "lr": backbone_lr},
-            {"params": head_params, "lr": head_lr},
+            {"params": head_params,     "lr": head_lr},
         ]
