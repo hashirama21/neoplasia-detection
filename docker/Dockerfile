@@ -31,17 +31,12 @@ RUN python -m pip install \
     --no-color \
     --requirement requirements.txt
 
-COPY --chown=user:user src/       src/
-COPY --chown=user:user configs/   configs/
-COPY --chown=user:user weights/   weights/
-COPY --chown=user:user inference.py .
+COPY --chown=user:user src/          src/
+COPY --chown=user:user configs/      configs/
+COPY --chown=user:user scripts/      scripts/
+COPY --chown=user:user weights/      weights/
+COPY --chown=user:user inference.py  .
 
-RUN python -c "
-import timm, torch
-model = timm.create_model('vit_base_patch14_dinov2.lvd142m', pretrained=False, num_classes=0, img_size=392, dynamic_img_size=True)
-out = model(torch.zeros(1, 3, 392, 392))
-print(f'Pre-warm OK — output: {out.shape}')
-del model
-"
+RUN python scripts/prewarm.py
 
 ENTRYPOINT ["python", "inference.py"]
