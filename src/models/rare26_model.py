@@ -149,12 +149,24 @@ class Rare26Model(nn.Module):
         logger.info("Loading GastroNet-5M weights from %s", checkpoint_path)
         state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
+        # Handle DINO/DINOv2 training checkpoints that wrap the model under a
+        # top-level key ('teacher' = EMA network, 'student', 'model', 'state_dict').
+        # Without this extraction the entire backbone is missing (174 keys).
+        for dino_key in ("teacher", "student", "model", "state_dict"):
+            val = state_dict.get(dino_key)
+            if isinstance(val, dict) and len(val) > 10:
+                logger.info("Extracting '%s' sub-dict from DINO-style checkpoint", dino_key)
+                state_dict = val
+                break
+
+        # Strip common wrapper prefixes left after extraction
         for prefix in ("backbone.", "model.", "encoder."):
             if any(k.startswith(prefix) for k in state_dict.keys()):
                 state_dict = {
                     (k[len(prefix):] if k.startswith(prefix) else k): v
                     for k, v in state_dict.items()
                 }
+                logger.info("Stripped prefix '%s' from checkpoint keys", prefix)
                 break
 
         state_dict = self._interpolate_pos_embed(state_dict)
