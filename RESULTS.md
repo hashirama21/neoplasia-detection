@@ -129,6 +129,124 @@ This is a **strong competition result**:
 
 ---
 
+## How to Clinically Validate This Model
+
+Clinical validation of an AI diagnostic tool follows a structured path. Here is what it means concretely for Barrett neoplasia detection.
+
+### Level 0 — Technical validation (done)
+
+| Check | Status |
+|-------|--------|
+| Bootstrap PPV@90R at 1% prevalence | ✅ |
+| Reproducibility across 5 independent seeds | ✅ |
+| Patient-level val split (no leakage) | ✅ |
+| RARE26 competition leaderboard score | ⏳ pending submission |
+
+This level proves the code works. Not that the model is clinically useful.
+
+---
+
+### Level 1 — Retrospective external validation
+
+Apply the frozen model to a patient cohort that never touched training, ideally from a different hospital.
+
+**Requirements:**
+- ≥ 200–300 histologically confirmed positive cases (biopsy gold standard)
+- ≥ 1000–2000 negatives
+- Different endoscopes (Fuji, Pentax — not only Olympus)
+- Different operators (multiple gastroenterologists)
+- Different acquisition protocol (different country, different period)
+
+**What to measure:**
+- AUC ROC, sensitivity, specificity at multiple thresholds
+- PPV and NPV at the real population prevalence
+- Comparison vs. expert gastroenterologist (non-inferiority)
+- Subgroup analysis: stage, morphology, image quality
+
+**Practical step:** contact the RARE26 organizers (TU/e + AMC Amsterdam) to request access to their extended validation cohort.
+
+---
+
+### Level 2 — Explainability (does the model look at the right thing?)
+
+Before any serious clinical validation, a gastroenterologist must confirm that model activations correspond to neoplastic morphology — not to acquisition artifacts.
+
+```python
+# Grad-CAM on the LoRA attention layers
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+
+target_layer = model.backbone.blocks[-1].attn
+cam = GradCAM(model=model, target_layers=[target_layer])
+grayscale_cam = cam(input_tensor=image_tensor)
+# → overlay on the endoscopic image
+# → show to a gastroenterologist: "does the model look at the lesion?"
+```
+
+**What a clinician must confirm:**
+- Activated zones match suspicious areas (pit pattern, vascularity)
+- The model does not react to specular reflections, bubbles, or frame borders
+- False positives have coherent activations (inflammation, metaplasia)
+
+---
+
+### Level 3 — Prospective pilot study
+
+The model runs in real time during endoscopies, blinded (the gastroenterologist does not see the score). Afterward compare:
+- Model prediction vs. histological biopsy (gold standard)
+- Model prediction vs. gastroenterologist decision
+
+**Requirements:**
+- Ethics committee approval (IRB/MEC)
+- Integration infrastructure in the endoscopic system
+- 6–18 months of patient recruitment depending on prevalence
+- Pre-registered protocol (ClinicalTrials.gov)
+
+**Typical endpoints:**
+- Sensitivity ≥ 90% (non-inferiority vs. expert)
+- Specificity ≥ 80%
+- Inter-rater kappa model/expert > 0.7
+
+---
+
+### Level 4 — Regulatory approval
+
+| Region | Pathway | Estimated duration |
+|--------|---------|--------------------|
+| Europe | CE Mark (MDR 2017/745, class IIa) | 18–36 months |
+| USA | FDA 510(k) or De Novo | 12–24 months |
+| Publication | Lancet Digital Health, Gut, Endoscopy | 6–18 months review |
+
+For a detection assistance tool (CDSS — Clinical Decision Support Software), the EU classification is typically **IIa** if the practitioner remains the final decision-maker.
+
+---
+
+### Roadmap
+
+```
+Now           → Submit to RARE26 (leaderboard = first external validation)
+              → Implement Grad-CAM, show to a gastroenterologist
+
+Short term    → Contact BONS-AI / AMC for access to extended validation cohort
+(6–12 months) → Multi-center retrospective study on ≥ 300 positives
+              → Technical publication (MICCAI, Medical Image Analysis)
+
+Medium term   → Prospective pilot study with IRB protocol
+(1–3 years)   → If positive results: CE Mark pathway
+```
+
+---
+
+## Conclusion
+
+> PPV=1.0 on 17 positives = **promising, not proven.**
+>
+> Real clinical validation starts with an **independent external cohort of at least 200 histologically confirmed positives**, across multiple centers, with multiple endoscope types.
+>
+> The immediate next steps are: **RARE26 leaderboard score** + **Grad-CAM reviewed by an expert gastroenterologist**.
+
+---
+
 ## Artifacts
 
 ```
