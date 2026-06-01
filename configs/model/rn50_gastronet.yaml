@@ -1,0 +1,27 @@
+_target_: src.models.rare26_model.Rare26Model
+
+backbone:
+  name: resnet50
+  pretrained: false
+  # img_size omitted — ResNet handles variable sizes natively
+
+lora:
+  # LoRA targets attention layers; ResNet has none. Disable.
+  enabled: false
+
+head:
+  embed_dim: 2048   # ResNet50 global avg-pool output dimension
+  hidden_dim: 512
+  dropout: 0.3
+  num_classes: 1
+
+# Replace with the desired GastroNet ResNet50 checkpoint.
+# Supported SSL methods: DINOv1, MOCOv2, SIMCLRv2, SWSL+DINOv1
+# Checkpoint key structures are handled automatically in _load_gastronet_weights.
+#
+# Available checkpoints (set via paths.weights_dir):
+#   RN50_GastroNet-5M_DINOv1.pth
+#   RN50_GastroNet-5M_MOCOv2.pth
+#   RN50_GastroNet-5M_SIMCLRv2.pth
+#   RN50_Billion-Scale-SWSL+GastroNet-5M_DINOv1.pth
+checkpoint_path: ${paths.weights_dir}/RN50_GastroNet-5M_DINOv1.pth

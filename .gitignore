@@ -28,6 +28,7 @@ data/images/
 # Jupyter
 .ipynb_checkpoints/
 notebooks/*.ipynb
+RARE2026-SECOND.ipynb
 
 # IDE
 .vscode/
@@ -36,3 +37,6 @@ notebooks/*.ipynb
 # OS
 .DS_Store
 Thumbs.db
+
+# Session transcripts
+*.txt

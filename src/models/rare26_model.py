@@ -37,20 +37,26 @@ class ClassificationHead(nn.Module):
 
 class Rare26Model(nn.Module):
     """
-    ViT-Base DINOv2 with GastroNet-5M pretrained weights.
-    Uses LoRA for parameter-efficient fine-tuning of the backbone.
+    DINOv2 ViT-B or ResNet50 backbone with GastroNet-5M pretrained weights.
+    LoRA fine-tuning via peft (ViT only); ResNet50 uses full backbone fine-tuning.
     """
 
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.cfg = cfg
 
+        # img_size and dynamic_img_size are ViT-specific — ResNet ignores them
+        is_vit = any(k in cfg.backbone.name.lower() for k in ("vit", "dino"))
+        extra = (
+            {"img_size": cfg.backbone.img_size, "dynamic_img_size": True}
+            if is_vit and hasattr(cfg.backbone, "img_size")
+            else {}
+        )
         self.backbone = timm.create_model(
             cfg.backbone.name,
             pretrained=False,
             num_classes=0,
-            img_size=cfg.backbone.img_size,
-            dynamic_img_size=True,
+            **extra,
         )
 
         if cfg.checkpoint_path and Path(cfg.checkpoint_path).exists():
@@ -88,7 +94,7 @@ class Rare26Model(nn.Module):
         src_n     = src_patch.shape[1]
 
         h_src = int(src_n ** 0.5)
-        w_src = src_n // h_src          # handles non-square grids
+        w_src = src_n // h_src
         if h_src * w_src != src_n:
             raise ValueError(
                 f"Cannot infer patch grid from N={src_n} tokens "
@@ -116,23 +122,47 @@ class Rare26Model(nn.Module):
         logger.info("Loading GastroNet-5M weights from %s", checkpoint_path)
         state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
-        for prefix in ("backbone.", "model.", "encoder."):
+        # Extract backbone sub-dict from DINO/DINOv2 training checkpoints
+        # (teacher = EMA network, student, model, state_dict are all common wrappers)
+        for dino_key in ("teacher", "student", "model", "state_dict"):
+            val = state_dict.get(dino_key)
+            if isinstance(val, dict) and len(val) > 10:
+                logger.info("Extracting '%s' sub-dict from checkpoint", dino_key)
+                state_dict = val
+                break
+
+        # Strip wrapper prefixes — order matters, most specific first:
+        #   MOCOv2  : module.encoder_q.*
+        #   SIMCLRv2: module.encoder.0.* (ResNet50 is encoder[0])
+        #   DDP     : module.*
+        #   GastroNet/DINO: backbone.* / model.* / encoder.*
+        for prefix in (
+            "module.encoder_q.",
+            "module.encoder.0.",
+            "module.encoder.",
+            "module.",
+            "backbone.",
+            "model.",
+            "encoder.",
+        ):
             if any(k.startswith(prefix) for k in state_dict.keys()):
                 state_dict = {
                     (k[len(prefix):] if k.startswith(prefix) else k): v
                     for k, v in state_dict.items()
                 }
+                logger.info("Stripped prefix '%s' from checkpoint keys", prefix)
                 break
 
         state_dict = self._interpolate_pos_embed(state_dict)
 
         msg = self.backbone.load_state_dict(state_dict, strict=False)
-        logger.info("Checkpoint loaded. Missing: %d, Unexpected: %d",
-                    len(msg.missing_keys), len(msg.unexpected_keys))
-
+        logger.info(
+            "Checkpoint loaded. Missing: %d, Unexpected: %d",
+            len(msg.missing_keys), len(msg.unexpected_keys),
+        )
 
     def _apply_lora(self, lora_cfg: DictConfig) -> None:
-        """Apply LoRA to TIMM ViT backbone.
+        """Apply LoRA to TIMM ViT backbone via peft.
 
         Uses inject_adapter_in_model instead of get_peft_model to avoid wrapping
         the backbone in PeftModel, which injects NLP forward args (input_ids)
@@ -153,7 +183,7 @@ class Rare26Model(nn.Module):
             mark_only_lora_as_trainable(self.backbone)
 
             trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
-            total = sum(p.numel() for p in self.backbone.parameters())
+            total     = sum(p.numel() for p in self.backbone.parameters())
             logger.info(
                 "LoRA applied: trainable params: %d || all params: %d || trainable%%: %.4f",
                 trainable, total, 100 * trainable / total,
@@ -174,5 +204,5 @@ class Rare26Model(nn.Module):
         head_params = list(self.head.parameters())
         return [
             {"params": backbone_params, "lr": backbone_lr},
-            {"params": head_params, "lr": head_lr},
+            {"params": head_params,     "lr": head_lr},
         ]

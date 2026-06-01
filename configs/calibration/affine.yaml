@@ -1,0 +1,26 @@
+_target_: src.calibration.calibrator.PPVCalibrator
+
+method: affine
+
+affine:
+  # Encodes the 1% test prevalence directly in the calibration objective.
+  # [P(NDBE), P(neoplasia)] — matches official RARE26 bootstrap simulation.
+  priors: [0.9900990099, 0.0099009901]  # [100/101, 1/101]
+
+# Bootstrap simulation — mirrors official evaluation exactly
+bootstrap:
+  n_iterations: 1000
+  prevalence: 0.01
+  target_recall: 0.90
+  seed: ${project.seed}
+
+# Threshold grid search
+threshold_grid:
+  start: 0.001
+  stop: 0.999
+  step: 0.001
+
+optimize: median_ppv
+
+# Strict: only use val_calibration split — never val_selection
+calibration_set: val_calibration

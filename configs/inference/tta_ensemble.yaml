@@ -17,8 +17,13 @@ tta:
 # Ensemble configuration
 ensemble:
   n_models: 5
-  aggregation: mean_logits  # mean_logits | mean_probs | median_logits
+  # mean_logits : average logits then sigmoid. Assumes exchangeable models.
+  # noisy_or    : 1 - prod(1 - p_i). Correct for detection ensembles.
+  aggregation: noisy_or
   calibrate_after_ensemble: true
+  # uncertainty_penalty: raise effective threshold by penalty × std(probs).
+  # 0.0 = disabled. 0.3–0.5 reduces false positives on uncertain cases.
+  uncertainty_penalty: 0.0
 
 # Decision threshold — set after calibration, hardcoded for Docker
 threshold: 0.5  # overwritten by calibration script output

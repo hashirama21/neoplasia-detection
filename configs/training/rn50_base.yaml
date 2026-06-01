@@ -1,0 +1,43 @@
+_target_: src.training.trainer.Rare26Trainer
+
+epochs: 30
+gradient_clip_val: 1.0
+accumulate_grad_batches: 1   # ResNet50 < 25 MB VRAM per batch; no accumulation needed
+
+optimizer:
+  _target_: torch.optim.AdamW
+  # ResNet50 backbone is already GastroNet-adapted — use higher LR than ViT-LoRA
+  backbone_lr: 1.0e-4
+  head_lr:     1.0e-3
+  weight_decay: 0.05          # stronger regularisation — all 23M params are trainable
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: ${training.epochs}
+  eta_min: 1.0e-7
+
+loss:
+  _target_: src.losses.asymmetric_loss.AsymmetricLoss
+  gamma_neg: 4
+  gamma_pos: 1
+  clip: 0.05
+  gamma_neg_sweep: [2, 4, 6]
+
+early_stopping:
+  monitor: val_ppv_at_90recall
+  mode: max
+  patience: 8               # slightly shorter than ViT — ResNet converges faster
+  min_delta: 0.001
+
+cross_validation:
+  enabled: false            # disable CV gamma sweep for ResNet (use default gamma=4)
+  n_splits: 5
+  stratified: true
+  seed: ${project.seed}
+
+logging:
+  log_every_n_steps: 10
+  save_top_k: 3
+  monitor: val_ppv_at_90recall
+
+mixed_precision: true
