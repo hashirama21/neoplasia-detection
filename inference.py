@@ -40,6 +40,9 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 
+from src.data.dataset import build_val_transform  
+
+
 INPUT_PATH  = Path("/input")
 OUTPUT_PATH = Path("/output")
 WEIGHTS_DIR = Path("/opt/ml/weights")
@@ -101,15 +104,6 @@ def load_stacked_tiff(location: Path) -> list[np.ndarray]:
             )
         result.append(frame)
     return result
-
-
-def build_val_transform(img_size: int = 392, resize_size: int = 448) -> T.Compose:
-    return T.Compose([
-        T.Resize(resize_size, interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(img_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
 
 
 def _build_predictor_cfg():
@@ -316,25 +310,32 @@ def _predict_ensemble(
 
     likelihoods: list[float] = []
     for i, frame in enumerate(frames):
-        pil    = Image.fromarray(frame)
-        result = predictor.predict_single(pil, transform)
-        cal_prob = result["calibrated_prob"]
+        try:
+            pil      = Image.fromarray(frame)
+            result   = predictor.predict_single(pil, transform)
+            cal_prob = result["calibrated_prob"]
 
-        if detector is not None and hybrid is not None:
-            img_tensor = transform(pil).unsqueeze(0).to(device)
-            anom_score = detector.score(predictor.models[0], img_tensor, device)
-            cal_prob   = hybrid.combine(cal_prob, anom_score)
-            log.info(
-                "Frame %d/%d  ens=%.4f  anom=%.4f  hybrid=%.4f  pred=%d",
-                i + 1, len(frames), result["calibrated_prob"], anom_score, cal_prob,
-                int(cal_prob >= predictor.threshold),
+            if detector is not None and hybrid is not None:
+                img_tensor = transform(pil).unsqueeze(0).to(device)
+                anom_score = detector.score(predictor.models[0], img_tensor, device)
+                cal_prob   = hybrid.combine(cal_prob, anom_score)
+                log.info(
+                    "Frame %d/%d  ens=%.4f  anom=%.4f  hybrid=%.4f  pred=%d",
+                    i + 1, len(frames), result["calibrated_prob"], anom_score, cal_prob,
+                    int(cal_prob >= predictor.threshold),
+                )
+            else:
+                log.info(
+                    "Frame %d/%d  cal=%.4f  unc=%.4f  pred=%d",
+                    i + 1, len(frames), cal_prob, result["uncertainty"],
+                    result["prediction"],
+                )
+        except Exception as exc:
+            log.error(
+                "Frame %d/%d failed: %s — substituting likelihood=0.0.",
+                i + 1, len(frames), exc,
             )
-        else:
-            log.info(
-                "Frame %d/%d  cal=%.4f  unc=%.4f  pred=%d",
-                i + 1, len(frames), cal_prob, result["uncertainty"],
-                result["prediction"],
-            )
+            cal_prob = 0.0
 
         likelihoods.append(round(cal_prob, 6))
 
@@ -389,14 +390,31 @@ def _predict_mil(
     )
     return 0
 
+
+_KNOWN_SLUG = "stacked-barretts-esophagus-endoscopy-images"
+
+
 def run() -> int:
-    key = get_interface_key()
-    log.info("Interface: %s", key)
+    try:
+        key = get_interface_key()
+        log.info("Interface: %s", key)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
+        log.warning("Could not read inputs.json (%s) — assuming standard interface.", exc)
+        return interface_0_handler()
+
     handler = {
-        ("stacked-barretts-esophagus-endoscopy-images",): interface_0_handler,
+        (_KNOWN_SLUG,): interface_0_handler,
     }.get(key)
+
     if handler is None:
-        raise ValueError(f"Unknown interface key: {key}")
+        # Tolerate extra slugs added by Grand Challenge (e.g. metadata interfaces)
+        if _KNOWN_SLUG in key:
+            log.warning(
+                "Unexpected interface slugs %s — routing to standard handler.", key
+            )
+            return interface_0_handler()
+        raise ValueError(f"Unknown interface: {key}")
+
     return handler()
 
 

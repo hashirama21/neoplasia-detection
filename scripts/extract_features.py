@@ -33,19 +33,11 @@ import torch
 from omegaconf import OmegaConf
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
 from tqdm import tqdm
 
+from src.data.dataset import build_val_transform
+
 log = logging.getLogger(__name__)
-
-
-def build_val_transform(img_size: int = 392, resize_size: int = 448) -> transforms.Compose:
-    return transforms.Compose([
-        transforms.Resize(resize_size, interpolation=transforms.InterpolationMode.BICUBIC),
-        transforms.CenterCrop(img_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
 
 
 def extract_patient_id(image_path: str) -> str:
@@ -106,7 +98,6 @@ def _extract_all_features(
         pin_memory=True,
     )
 
-    all_features = np.empty((len(paths), 0), dtype=np.float32)
     feature_buffer = [None] * len(paths)
 
     backbone.eval()

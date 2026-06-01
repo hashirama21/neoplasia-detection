@@ -48,8 +48,8 @@ class FrameQualityFilter:
         self.cfg = cfg or FrameQualityConfig()
 
     @staticmethod
-    def score(frame: np.ndarray) -> float:
-        """Compute quality score ∈ [0, 1] for a single HxWx3 uint8 frame."""
+    def _compute_stats(frame: np.ndarray) -> tuple[float, float]:
+        """Returns (composite_score, overexposed_frac) for a single frame."""
         try:
             import cv2
         except ImportError as exc:
@@ -57,11 +57,16 @@ class FrameQualityFilter:
                 "opencv-python-headless is required for FrameQualityFilter. "
                 "Install with: pip install opencv-python-headless"
             ) from exc
-
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if frame.ndim == 3 else frame
         sharpness = cv2.Laplacian(gray.astype(np.float64), cv2.CV_64F).var()
         overexposed = float((gray > 240).mean())
-        return float(sharpness / (sharpness + 50.0)) * (1.0 - overexposed)
+        score = float(sharpness / (sharpness + 50.0)) * (1.0 - overexposed)
+        return score, overexposed
+
+    @staticmethod
+    def score(frame: np.ndarray) -> float:
+        """Compute quality score ∈ [0, 1] for a single HxWx3 uint8 frame."""
+        return FrameQualityFilter._compute_stats(frame)[0]
 
     def filter(self, frames: list[np.ndarray]) -> list[np.ndarray]:
         """
@@ -73,16 +78,16 @@ class FrameQualityFilter:
         if not frames:
             return frames
 
-        scored = [(self.score(f), f) for f in frames]
+        stats = [self._compute_stats(f) for f in frames]  # [(score, overexp), ...]
 
         cfg = self.cfg
-        passed = [
-            (s, f) for s, f in scored
+        passed_idx = [
+            i for i, (s, overexp) in enumerate(stats)
             if s >= cfg.min_sharpness_score
-            and (1.0 - s) <= cfg.max_overexposed_ratio
+            and overexp <= cfg.max_overexposed_ratio
         ]
 
-        if not passed:
+        if not passed_idx:
             logger.warning(
                 "FrameQualityFilter: no frame passed quality gates "
                 "(min_sharpness=%.2f, max_overexposed=%.2f). "
@@ -91,15 +96,15 @@ class FrameQualityFilter:
                 cfg.max_overexposed_ratio,
                 len(frames),
             )
-            passed = scored
+            passed_idx = list(range(len(frames)))
 
-        passed.sort(key=lambda x: x[0], reverse=True)
+        passed_idx.sort(key=lambda i: stats[i][0], reverse=True)
 
         if cfg.top_k is not None:
-            passed = passed[: cfg.top_k]
+            passed_idx = passed_idx[: cfg.top_k]
 
         logger.debug(
             "FrameQualityFilter: kept %d / %d frames (top_k=%s)",
-            len(passed), len(frames), cfg.top_k,
+            len(passed_idx), len(frames), cfg.top_k,
         )
-        return [f for _, f in passed]
+        return [frames[i] for i in passed_idx]

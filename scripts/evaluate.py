@@ -100,12 +100,12 @@ def main(cfg: DictConfig) -> None:
     dm = Rare26DataModule(cfg.data)
 
     log.info("Recalibrating ensemble on val_calibration set...")
-    cal_loader = dm.val_calibration_dataloader()
-
-    cal_result = predictor.predict_loader(cal_loader)
+    # Collect labels in a fast dedicated pass first, then run expensive model inference.
+    # Both loaders use shuffle=False so order is guaranteed identical.
     cal_labels = np.concatenate([
         batch["label"].numpy() for batch in dm.val_calibration_dataloader()
     ])
+    cal_result = predictor.predict_loader(dm.val_calibration_dataloader())
 
     calibrator = PPVCalibrator(cfg.calibration)
     calibrator.fit_and_optimize(cal_result["raw_probs"], cal_labels)
@@ -114,14 +114,18 @@ def main(cfg: DictConfig) -> None:
     # Save ensemble calibration artifacts
     ensemble_results_dir = Path(cfg.project.output_dir) / "ensemble" / "results"
     calibrator.save(str(ensemble_results_dir))
+    log.info(
+        "Calibration artifacts saved to %s — copy to WEIGHTS_DIR/calibration/ "
+        "before building the Docker image.",
+        ensemble_results_dir,
+    )
 
-    log.info("Running ensemble inference on val_selection set...")
-    val_loader = dm.val_selection_dataloader()
-    result = predictor.predict_loader(val_loader)
-
+    # Collect val_selection labels before inference (same rationale as above)
     val_labels = np.concatenate([
         batch["label"].numpy() for batch in dm.val_selection_dataloader()
     ])
+    log.info("Running ensemble inference on val_selection set...")
+    result = predictor.predict_loader(dm.val_selection_dataloader())
 
     log.info("Running official bootstrap evaluation (1000 iterations, 1%% prevalence)...")
     bootstrap = bootstrap_ppv_at_recall(

@@ -66,7 +66,11 @@ class PatchCoreDetector:
                 break
 
         if not hooks:
-            logger.warning("Layer %s not found — using CLS token only.", self.feature_layer)
+            logger.warning(
+                "Layer '%s' not found in backbone — PatchCore will be inactive. "
+                "Ensure PatchCore was fitted with the same backbone architecture (e.g. ViT with 'blocks.9').",
+                self.feature_layer,
+            )
 
         model.eval()
         with torch.no_grad():
@@ -147,11 +151,13 @@ class PatchCoreDetector:
 
         query = F.normalize(all_features[0].squeeze(0), dim=-1)  # (N_patches, D)
 
-        # Compute distances to memory bank
-        sim = query @ self.memory_bank.T  # (N_patches, M)
-        top_k_sim, _ = sim.topk(self.k_neighbors, dim=-1)
-        knn_distances = 1.0 - top_k_sim.mean(dim=-1)  # (N_patches,)
-        return float(knn_distances.max().item())  # Image-level score: max patch score
+        # Standard PatchCore: nearest-neighbour distance per patch, then take the max.
+        # Using max(sim) per patch (= min distance) rather than mean of top-k avoids
+        # underestimating anomaly for isolated outlier patches.
+        sim = query @ self.memory_bank.T          # (N_patches, M)
+        nn_sim = sim.max(dim=-1).values            # (N_patches,) — nearest neighbour
+        knn_distances = 1.0 - nn_sim              # (N_patches,) — NN distances
+        return float(knn_distances.max().item())   # image-level score: worst patch
 
     def save(self, path: str) -> None:
         with open(path, "wb") as f:

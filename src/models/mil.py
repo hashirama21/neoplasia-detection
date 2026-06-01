@@ -129,9 +129,16 @@ def extract_bag_features(
 
     Typical usage at inference: call once per stacked TIFF, then pass to MIL head.
     """
+    from PIL import Image as _PILImage
     backbone.eval()
-    tensors = [transform(frame) if not isinstance(frame, torch.Tensor) else frame
-               for frame in frames]
+    tensors = []
+    for frame in frames:
+        if isinstance(frame, torch.Tensor):
+            tensors.append(frame)
+        elif isinstance(frame, np.ndarray):
+            tensors.append(transform(_PILImage.fromarray(frame)))
+        else:
+            tensors.append(transform(frame))
     batch = torch.stack(tensors).to(device)
     with torch.no_grad():
         H = backbone(batch)  # (N, feature_dim)
