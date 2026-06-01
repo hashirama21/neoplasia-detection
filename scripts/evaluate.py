@@ -99,8 +99,6 @@ def main(cfg: DictConfig) -> None:
 
     dm = Rare26DataModule(cfg.data)
 
-    # Always recalibrate using the ENSEMBLE's outputs on val_calibration,
-    # not the per-seed calibrators (calibrate_after_ensemble: true).
     log.info("Recalibrating ensemble on val_calibration set...")
     cal_loader = dm.val_calibration_dataloader()
 

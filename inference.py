@@ -169,13 +169,13 @@ def load_ensemble_predictor(device: torch.device):
     return predictor
 
 
-def load_calibration_artifacts(predictor) -> None:
+def _load_calibrator_raw():
     """
-    Auto-detect and attach the calibration artifacts to the predictor.
-    Priority: affine → isotonic → raw probabilities.
-    Also reads optimal_threshold from calibration_results.json.
+    Load and return the raw calibrator object (AffineCalibrator or IsotonicCalibrator).
+    Returns (calibrator, threshold). calibrator may be None.
+    Single source of truth used by both load_calibration_artifacts and _predict_mil.
     """
-    cal_dir = WEIGHTS_DIR / "calibration"
+    cal_dir      = WEIGHTS_DIR / "calibration"
     results_path = cal_dir / "calibration_results.json"
 
     threshold = 0.5
@@ -192,18 +192,50 @@ def load_calibration_artifacts(predictor) -> None:
         from src.calibration.calibrator import AffineCalibrator
         cal = AffineCalibrator()
         cal.load(str(affine_path))
-        predictor.calibrator = cal
         log.info("Affine calibrator loaded.")
-    elif isotonic_path.exists():
+        return cal, threshold
+    if isotonic_path.exists():
         from src.calibration.calibrator import IsotonicCalibrator
         cal = IsotonicCalibrator()
         cal.load(str(isotonic_path))
-        predictor.calibrator = cal
         log.info("Isotonic calibrator loaded.")
-    else:
-        log.warning("No calibrator found — using raw probabilities.")
+        return cal, threshold
 
-    predictor.threshold = threshold
+    log.warning("No calibrator found — using raw probabilities.")
+    return None, threshold
+
+
+def load_calibration_artifacts(predictor) -> None:
+    """Attach calibrator and threshold to an EnsemblePredictor."""
+    cal, threshold = _load_calibrator_raw()
+    predictor.calibrator = cal
+    predictor.threshold  = threshold
+
+
+def load_patchcore():
+    """
+    Load PatchCore + HybridScorer if present in WEIGHTS_DIR.
+    Returns (PatchCoreDetector, HybridScorer) or (None, None).
+    Hybrid Noisy-OR scoring activates automatically when patchcore.pkl is present.
+    """
+    pc_path     = WEIGHTS_DIR / "patchcore.pkl"
+    hybrid_path = WEIGHTS_DIR / "hybrid_config.json"
+
+    if not pc_path.exists():
+        return None, None
+
+    from src.models.patchcore import HybridScorer, PatchCoreDetector
+    detector = PatchCoreDetector()
+    detector.load(str(pc_path))
+
+    hybrid = HybridScorer()
+    if hybrid_path.exists():
+        hybrid.load(str(hybrid_path))
+    else:
+        log.warning("hybrid_config.json not found — using default alpha=0.9, beta=0.3")
+
+    log.info("PatchCore loaded — memory bank: %d patches", len(detector.memory_bank))
+    return detector, hybrid
 
 
 def load_mil_predictor(device: torch.device):
@@ -261,12 +293,10 @@ def interface_0_handler() -> int:
 
     transform = build_val_transform()
 
-    # ── MIL mode
     mil_result = load_mil_predictor(device)
     if mil_result is not None:
         return _predict_mil(frames, mil_result, transform, device)
 
-    # ── Ensemble mode (default)
     return _predict_ensemble(frames, transform, device)
 
 
@@ -275,27 +305,43 @@ def _predict_ensemble(
     transform: T.Compose,
     device: torch.device,
 ) -> int:
-    """Score each frame independently; output one calibrated prob per frame."""
+    """
+    Score each frame independently via ensemble + TTA.
+    If patchcore.pkl is present, fuses ensemble probability with PatchCore
+    anomaly score using Noisy-OR (HybridScorer).
+    """
     predictor = load_ensemble_predictor(device)
     load_calibration_artifacts(predictor)
+    detector, hybrid = load_patchcore()
 
     likelihoods: list[float] = []
     for i, frame in enumerate(frames):
-        pil = Image.fromarray(frame)
+        pil    = Image.fromarray(frame)
         result = predictor.predict_single(pil, transform)
-        likelihoods.append(round(result["calibrated_prob"], 6))
-        log.info(
-            "Frame %d/%d  cal=%.4f  unc=%.4f  pred=%d",
-            i + 1, len(frames),
-            result["calibrated_prob"],
-            result["uncertainty"],
-            result["prediction"],
-        )
+        cal_prob = result["calibrated_prob"]
+
+        if detector is not None and hybrid is not None:
+            img_tensor = transform(pil).unsqueeze(0).to(device)
+            anom_score = detector.score(predictor.models[0], img_tensor, device)
+            cal_prob   = hybrid.combine(cal_prob, anom_score)
+            log.info(
+                "Frame %d/%d  ens=%.4f  anom=%.4f  hybrid=%.4f  pred=%d",
+                i + 1, len(frames), result["calibrated_prob"], anom_score, cal_prob,
+                int(cal_prob >= predictor.threshold),
+            )
+        else:
+            log.info(
+                "Frame %d/%d  cal=%.4f  unc=%.4f  pred=%d",
+                i + 1, len(frames), cal_prob, result["uncertainty"],
+                result["prediction"],
+            )
+
+        likelihoods.append(round(cal_prob, 6))
 
     n_pos = sum(p >= predictor.threshold for p in likelihoods)
     log.info(
-        "Ensemble done — %d/%d frame(s) neoplastic (thr=%.4f)",
-        n_pos, len(frames), predictor.threshold,
+        "Done — %d/%d frame(s) neoplastic (thr=%.4f, patchcore=%s)",
+        n_pos, len(frames), predictor.threshold, detector is not None,
     )
     _write_json(
         OUTPUT_PATH / "stacked-neoplastic-lesion-likelihoods.json",
@@ -312,7 +358,7 @@ def _predict_mil(
 ) -> int:
     """
     Bag-level MIL prediction.
-    FrameQualityFilter selects the most informative frames for feature extraction.
+    FrameQualityFilter selects the most informative frames.
     Bag-level score is broadcast to all input frames (competition format).
     """
     from src.data.frame_filter import FrameQualityConfig, FrameQualityFilter
@@ -320,46 +366,22 @@ def _predict_mil(
 
     backbone, mil_head = mil_result
 
-    # Filter: keep top-16 frames by quality for the bag
-    filt = FrameQualityFilter(FrameQualityConfig(top_k=16))
+    filt       = FrameQualityFilter(FrameQualityConfig(top_k=16))
     bag_frames = filt.filter(frames)
     log.info("MIL: using %d / %d frame(s) after quality filter.", len(bag_frames), len(frames))
 
     H = extract_bag_features(backbone.backbone, bag_frames, transform, device)
-
     with torch.no_grad():
-        logit, attn = mil_head(H.to(device))
+        logit, _ = mil_head(H.to(device))
         raw_prob = float(torch.sigmoid(logit).item())
 
-    # Calibrate the bag-level probability
-    cal_dir = WEIGHTS_DIR / "calibration"
-    affine_path   = cal_dir / "affine_calibrator.pt"
-    isotonic_path = cal_dir / "isotonic_calibrator.pkl"
-
-    if affine_path.exists():
-        from src.calibration.calibrator import AffineCalibrator
-        cal = AffineCalibrator()
-        cal.load(str(affine_path))
-        cal_prob = float(cal.transform(np.array([raw_prob]))[0])
-    elif isotonic_path.exists():
-        from src.calibration.calibrator import IsotonicCalibrator
-        cal = IsotonicCalibrator()
-        cal.load(str(isotonic_path))
-        cal_prob = float(cal.transform(np.array([raw_prob]))[0])
-    else:
-        cal_prob = raw_prob
-
-    threshold = 0.5
-    results_path = cal_dir / "calibration_results.json"
-    if results_path.exists():
-        threshold = float(_load_json(results_path).get("optimal_threshold", 0.5))
+    cal, threshold = _load_calibrator_raw()
+    cal_prob = float(cal.transform(np.array([raw_prob]))[0]) if cal is not None else raw_prob
 
     log.info(
         "MIL done — raw=%.4f  cal=%.4f  pred=%d  thr=%.4f",
         raw_prob, cal_prob, int(cal_prob >= threshold), threshold,
     )
-
-    # Broadcast bag score to all input frames (required by competition format)
     likelihoods = [round(cal_prob, 6)] * len(frames)
     _write_json(
         OUTPUT_PATH / "stacked-neoplastic-lesion-likelihoods.json",

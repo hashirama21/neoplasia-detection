@@ -1,0 +1,22 @@
+[
+  {
+    "checkpoint": "dinov2_fold0_val_ppv_0.9800.pt",
+    "model_config": "dinov2_gastronet"
+  },
+  {
+    "checkpoint": "dinov2_fold1_val_ppv_0.9750.pt",
+    "model_config": "dinov2_gastronet"
+  },
+  {
+    "checkpoint": "rn50_dino_fold0_val_ppv_0.9600.pt",
+    "model_config": "rn50_gastronet"
+  },
+  {
+    "checkpoint": "rn50_moco_fold0_val_ppv_0.9550.pt",
+    "model_config": "rn50_gastronet"
+  },
+  {
+    "checkpoint": "rn50_simclr_fold0_val_ppv_0.9500.pt",
+    "model_config": "rn50_gastronet"
+  }
+]

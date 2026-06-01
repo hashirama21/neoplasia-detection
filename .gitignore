@@ -28,7 +28,7 @@ data/images/
 # Jupyter
 .ipynb_checkpoints/
 notebooks/*.ipynb
-RARE2026-SECOND.ipynb
+notebooks/RARE2026-SECOND.ipynb
 
 # IDE
 .vscode/

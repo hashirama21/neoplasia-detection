@@ -49,9 +49,28 @@ def build_val_transform(img_size: int = 392, resize_size: int = 448) -> transfor
 
 
 def extract_patient_id(image_path: str) -> str:
-    stem = Path(image_path).stem
-    part = stem.split("_")[0]
-    return part if part.lower().startswith("pat") else stem
+    """
+    Infer bag (patient) ID from filename.
+    Rules tried in order:
+      1. pat{XX}_...  → patXX          (RARE standard)
+      2. {A}_{B}_...  → A_B            (e.g. batch_0_15 → batch_0)
+      3. fallback     → full stem
+    If all images get unique IDs (no grouping), MIL will train on bags of 1 frame
+    and learn nothing useful. Run with --dry-run to preview groupings before fitting.
+    """
+    stem  = Path(image_path).stem
+    parts = stem.split("_")
+
+    if parts[0].lower().startswith("pat"):
+        return parts[0]
+
+    if len(parts) >= 2:
+        bag_id = f"{parts[0]}_{parts[1]}"
+        log.debug("Non-standard filename '%s' → bag_id='%s'", stem, bag_id)
+        return bag_id
+
+    log.warning("Cannot infer bag_id from '%s' — using full stem. Check filename convention.", stem)
+    return stem
 
 
 class ImageListDataset(Dataset):

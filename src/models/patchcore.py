@@ -174,27 +174,59 @@ class PatchCoreDetector:
 
 class HybridScorer:
     """
-    Combine classifier probability and PatchCore anomaly score.
-    score_final = alpha * p_classifier + beta * p_anomaly
+    Combine classifier probability and PatchCore anomaly score via Noisy-OR.
 
-    Run ablation to determine if PatchCore improves PPV@90Recall before production use.
+    Noisy-OR: score = 1 - (1 - p_classifier) * (1 - p_anomaly)
+    Interpretation: "neoplastic if the classifier OR PatchCore flags it."
+    This preserves the probabilistic meaning of the output (stays in [0, 1])
+    without assuming the two scores are on the same scale.
+
+    alpha/beta weight each source before Noisy-OR fusion:
+        p_cls  = alpha * classifier_prob
+        p_pc   = beta  * normalize(patchcore_score)
+        result = 1 - (1 - p_cls) * (1 - p_pc)
     """
 
-    def __init__(self, alpha: float = 0.7, beta: float = 0.3):
+    def __init__(self, alpha: float = 0.9, beta: float = 0.3):
         self.alpha = alpha
         self.beta = beta
         self._score_normalizer: Optional[tuple[float, float]] = None
 
     def fit_normalizer(self, patchcore_scores: np.ndarray) -> None:
-        """Fit min-max normalizer for PatchCore scores on validation set."""
+        """Fit min-max normalizer for PatchCore scores on the calibration set."""
         self._score_normalizer = (float(patchcore_scores.min()), float(patchcore_scores.max()))
 
     def normalize_patchcore(self, score: float) -> float:
         if self._score_normalizer is None:
-            return score
+            return float(np.clip(score, 0.0, 1.0))
         s_min, s_max = self._score_normalizer
-        return (score - s_min) / (s_max - s_min + 1e-10)
+        return float(np.clip((score - s_min) / (s_max - s_min + 1e-10), 0.0, 1.0))
 
     def combine(self, classifier_prob: float, patchcore_score: float) -> float:
-        normalized_pc = self.normalize_patchcore(patchcore_score)
-        return self.alpha * classifier_prob + self.beta * normalized_pc
+        """Noisy-OR fusion of classifier probability and PatchCore anomaly score."""
+        p_cls = float(np.clip(self.alpha * classifier_prob, 0.0, 1.0))
+        p_pc  = float(np.clip(self.beta  * self.normalize_patchcore(patchcore_score), 0.0, 1.0))
+        return float(1.0 - (1.0 - p_cls) * (1.0 - p_pc))
+
+    def save(self, path: str) -> None:
+        """Persist alpha, beta, and normalizer bounds to JSON."""
+        import json
+        data = {
+            "alpha": self.alpha,
+            "beta":  self.beta,
+            "score_normalizer": list(self._score_normalizer) if self._score_normalizer else None,
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        logger.info("HybridScorer saved to %s", path)
+
+    def load(self, path: str) -> "HybridScorer":
+        import json
+        with open(path) as f:
+            data = json.load(f)
+        self.alpha = data["alpha"]
+        self.beta  = data["beta"]
+        if data.get("score_normalizer") is not None:
+            self._score_normalizer = tuple(data["score_normalizer"])
+        logger.info("HybridScorer loaded from %s (alpha=%.2f, beta=%.2f)", path, self.alpha, self.beta)
+        return self

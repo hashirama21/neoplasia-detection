@@ -188,11 +188,11 @@ class Rare26Model(nn.Module):
                 "LoRA applied: trainable params: %d || all params: %d || trainable%%: %.4f",
                 trainable, total, 100 * trainable / total,
             )
-        except ImportError:
-            logger.warning(
-                "peft not installed — falling back to differential learning rates only. "
-                "Install with: pip install peft"
-            )
+        except ImportError as exc:
+            raise ImportError(
+                "peft is required for LoRA fine-tuning. "
+                "Install with: pip install peft>=0.11.1"
+            ) from exc
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)
